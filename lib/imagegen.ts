@@ -65,8 +65,10 @@ async function generateGemini(req: GenerateBackgroundRequest): Promise<Buffer> {
   if (!key) throw new Error("GEMINI_API_KEY is not set");
   const { GoogleGenerativeAI } = await import("@google/generative-ai");
   const genAI = new GoogleGenerativeAI(key);
+  // GA image model ("Nano Banana"). Override with GEMINI_IMAGE_MODEL to use a
+  // newer/higher-quality model, e.g. gemini-3-pro-image.
   const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash-image-preview",
+    model: process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image",
   });
   const result = await model.generateContent(fullPrompt(req));
   const parts = result.response.candidates?.[0]?.content?.parts ?? [];
