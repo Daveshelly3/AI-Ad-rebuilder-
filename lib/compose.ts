@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { Resvg } from "@resvg/resvg-js";
 import type { AdSpec, TextElement } from "./adspec";
 
 /**
@@ -8,62 +9,42 @@ import type { AdSpec, TextElement } from "./adspec";
  * (for lifting brand assets), and the AdSpec, produce the final rebuilt ad:
  *   1. cover-fit the background to the original dimensions
  *   2. lift brand assets (logos/badges/script) pixel-exact from the original
- *   3. re-render plain informational text as crisp SVG layers
+ *   3. re-render plain informational text as crisp layers
+ *
+ * Text is rasterized with @resvg/resvg-js using bundled TTF font files. We use
+ * resvg (not sharp/librsvg) for text because librsvg ignores embedded fonts and
+ * relies on system fonts, which don't exist on serverless platforms (Vercel),
+ * producing tofu boxes. resvg loads fonts directly from `fontFiles`.
  */
 
-interface BundledFont {
-  family: string;
-  file: string; // filename inside public/fonts
-  weight: number;
-}
-
-// Optional bundled fonts. If the files are present they are embedded into the
-// SVG via @font-face; otherwise we fall back to generic families so the
-// pipeline always works (e.g. with no network to fetch fonts).
-const BUNDLED_FONTS: BundledFont[] = [
-  { family: "Anton", file: "Anton-Regular.ttf", weight: 400 },
-  { family: "Oswald", file: "Oswald-Bold.ttf", weight: 700 },
-  { family: "Inter", file: "Inter-Regular.ttf", weight: 400 },
-  { family: "Inter", file: "Inter-Bold.ttf", weight: 700 },
-];
-
+// Bundled static TTFs that ship with the app (see assets/fonts).
 function fontsDir(): string {
-  return path.join(process.cwd(), "public", "fonts");
+  return path.join(process.cwd(), "assets", "fonts");
 }
 
-function availableFonts(): BundledFont[] {
-  return BUNDLED_FONTS.filter((f) =>
-    fs.existsSync(path.join(fontsDir(), f.file))
-  );
-}
-
-// Build @font-face declarations for whichever bundled fonts exist on disk.
-function fontFaceCss(): string {
-  return availableFonts()
-    .map((f) => {
-      const data = fs.readFileSync(path.join(fontsDir(), f.file));
-      const b64 = data.toString("base64");
-      return `@font-face{font-family:'${f.family}';font-weight:${f.weight};src:url(data:font/ttf;base64,${b64}) format('truetype');}`;
-    })
-    .join("\n");
-}
-
-// Pick a font-family stack for an element. Prefer a bundled font matching the
-// hint; always include a generic fallback so text renders regardless.
-function fontFamily(el: TextElement): string {
-  const have = new Set(availableFonts().map((f) => f.family));
-  const heavy = el.weight === "bold" || el.weight === "black";
-  if (el.font_hint === "condensed-sans") {
-    if (have.has("Anton")) return "'Anton', 'Oswald', sans-serif";
-    if (have.has("Oswald")) return "'Oswald', sans-serif";
-    return "sans-serif";
+function fontFiles(): string[] {
+  try {
+    return fs
+      .readdirSync(fontsDir())
+      .filter((f) => f.toLowerCase().endsWith(".ttf"))
+      .map((f) => path.join(fontsDir(), f));
+  } catch {
+    return [];
   }
-  if (el.font_hint === "serif") return "'Georgia', serif";
-  if (el.font_hint === "mono") return "monospace";
-  if (el.font_hint === "script") return "'Brush Script MT', cursive";
-  // default sans
-  if (have.has("Inter")) return "'Inter', sans-serif";
-  return heavy ? "sans-serif" : "sans-serif";
+}
+
+// Map an element's hint/weight to a bundled font family name.
+function fontFamily(el: TextElement): string {
+  switch (el.font_hint) {
+    case "condensed-sans":
+      return "Anton";
+    case "serif":
+    case "sans":
+    case "mono":
+    case "script":
+    default:
+      return "PT Sans";
+  }
 }
 
 function fontWeightNumber(el: TextElement): number {
@@ -79,6 +60,12 @@ function fontWeightNumber(el: TextElement): number {
   }
 }
 
+// Rough per-glyph width factor relative to font size, used to keep a line from
+// overflowing its box when the re-rendered font is wider than the original.
+function widthFactor(family: string): number {
+  return family === "Anton" ? 0.46 : 0.55;
+}
+
 function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -90,8 +77,8 @@ function escapeXml(s: string): string {
 
 /**
  * Build a full-canvas SVG with every text element positioned at its bbox.
- * We use textLength + lengthAdjust so each line fills its original box width,
- * which keeps the layout faithful even when the re-rendered font differs.
+ * Font size is driven by the box height, then capped so the estimated line
+ * width fits the box, keeping the layout faithful across fonts.
  */
 export function buildTextSvg(spec: AdSpec): string {
   const W = spec.width;
@@ -103,8 +90,14 @@ export function buildTextSvg(spec: AdSpec): string {
       const boxY = el.bbox.y * H;
       const boxW = el.bbox.w * W;
       const boxH = el.bbox.h * H;
-      // Font size driven by the box height; baseline near the box bottom.
-      const fontSize = Math.max(8, boxH * 0.82);
+      const family = fontFamily(el);
+
+      // Start from height, then shrink to fit the box width if needed.
+      let fontSize = Math.max(8, boxH * 0.82);
+      const estWidth = el.text.length * widthFactor(family) * fontSize;
+      if (estWidth > boxW && estWidth > 0) {
+        fontSize = Math.max(8, fontSize * (boxW / estWidth));
+      }
       const baseline = boxY + boxH * 0.82;
 
       let anchor = "start";
@@ -121,20 +114,32 @@ export function buildTextSvg(spec: AdSpec): string {
         ? el.colorHex
         : "#ffffff";
 
-      return `<text x="${x.toFixed(1)}" y="${baseline.toFixed(1)}" textLength="${boxW.toFixed(
+      return `<text x="${x.toFixed(1)}" y="${baseline.toFixed(
         1
-      )}" lengthAdjust="spacingAndGlyphs" text-anchor="${anchor}" font-family="${fontFamily(
+      )}" text-anchor="${anchor}" font-family="${family}" font-weight="${fontWeightNumber(
         el
-      )}" font-weight="${fontWeightNumber(el)}" font-size="${fontSize.toFixed(
-        1
-      )}" fill="${fill}">${escapeXml(el.text)}</text>`;
+      )}" font-size="${fontSize.toFixed(1)}" fill="${fill}">${escapeXml(
+        el.text
+      )}</text>`;
     })
     .join("\n");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-<style>${fontFaceCss()}</style>
 ${layers}
 </svg>`;
+}
+
+// Rasterize the text SVG into a transparent PNG using bundled fonts.
+function rasterizeText(spec: AdSpec): Buffer {
+  const svg = buildTextSvg(spec);
+  const resvg = new Resvg(svg, {
+    font: {
+      loadSystemFonts: false,
+      fontFiles: fontFiles(),
+      defaultFontFamily: "PT Sans",
+    },
+  });
+  return Buffer.from(resvg.render().asPng());
 }
 
 export interface ComposeInput {
@@ -157,8 +162,10 @@ export async function composeAd({
   const composites: sharp.OverlayOptions[] = [];
 
   // 2. Lift brand assets pixel-exact from the original ad.
-  const original = sharp(originalBuffer).resize(W, H, { fit: "fill" });
-  const originalPng = await original.png().toBuffer();
+  const originalPng = await sharp(originalBuffer)
+    .resize(W, H, { fit: "fill" })
+    .png()
+    .toBuffer();
   for (const asset of spec.assets) {
     const left = Math.max(0, Math.round(asset.bbox.x * W));
     const top = Math.max(0, Math.round(asset.bbox.y * H));
@@ -172,9 +179,8 @@ export async function composeAd({
     composites.push({ input: crop, left, top });
   }
 
-  // 3. Re-render plain text as one SVG layer on top.
-  const svg = buildTextSvg(spec);
-  composites.push({ input: Buffer.from(svg), top: 0, left: 0 });
+  // 3. Re-render plain text as one rasterized layer on top.
+  composites.push({ input: rasterizeText(spec), top: 0, left: 0 });
 
   return base.composite(composites).png().toBuffer();
 }
