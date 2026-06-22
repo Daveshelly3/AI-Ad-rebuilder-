@@ -118,6 +118,7 @@ Return ONLY valid JSON (no markdown, no commentary) with this exact shape:
 
 Rules:
 - bbox values are normalized 0..1 relative to image width (x,w) and height (y,h). Be as accurate as you can.
+- For logos/wordmarks/badges/script, the bbox MUST enclose the COMPLETE element with a small margin on every side. Never crop a letter or part of a mark (e.g. include the full word, not "Grave" for "Gravel"). When unsure, make the box slightly larger.
 - Put STYLIZED brand marks, wordmark logos, badges, and decorative script taglines into "assets" (these will be lifted pixel-exact from the original). Put plain informational text (dates, prices, distances, URLs, labels) into "textElements" (these will be re-rendered).
 - A piece of text can ALSO be referenced as an asset if it is highly stylized (e.g. a hand-script tagline). Prefer assets for anything whose exact lettering matters to the brand.
 - Never invent text. Only include what is actually visible.

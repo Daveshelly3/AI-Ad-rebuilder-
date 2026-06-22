@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
       prompt?: string;
       negativePrompt?: string;
       aspectRatio?: number;
+      query?: string;
     };
     if (!body.prompt) {
       return NextResponse.json({ error: "Missing prompt" }, { status: 400 });
@@ -19,6 +20,7 @@ export async function POST(req: NextRequest) {
       prompt: body.prompt,
       negativePrompt: body.negativePrompt || "",
       aspectRatio: body.aspectRatio || 0.667,
+      query: body.query,
     });
 
     const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`;

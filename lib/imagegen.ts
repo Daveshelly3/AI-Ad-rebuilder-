@@ -7,6 +7,7 @@ import path from "node:path";
  * the IMAGE_PROVIDER env var so the rest of the app never knows which model ran.
  *
  * Providers:
+ *   - pexels : real stock photography searched by theme (default for production)
  *   - mock   : returns a bundled placeholder photo (no API key needed; dev default)
  *   - gemini : Google Gemini 2.5 Flash Image
  *   - openai : OpenAI gpt-image-1
@@ -18,6 +19,9 @@ export interface GenerateBackgroundRequest {
   negativePrompt: string;
   // width/height ratio, used to request the closest supported size.
   aspectRatio: number;
+  // Short search query (real-photo providers like Pexels use this instead of
+  // the long generation prompt).
+  query?: string;
 }
 
 const PHOTOREAL_SUFFIX =
@@ -32,6 +36,8 @@ export async function generateBackground(
 ): Promise<Buffer> {
   const provider = activeProvider();
   switch (provider) {
+    case "pexels":
+      return generatePexels(req);
     case "gemini":
       return generateGemini(req);
     case "openai":
@@ -42,6 +48,35 @@ export async function generateBackground(
     default:
       return generateMock(req);
   }
+}
+
+function orientation(aspectRatio: number): "portrait" | "landscape" | "square" {
+  if (aspectRatio < 0.85) return "portrait";
+  if (aspectRatio > 1.18) return "landscape";
+  return "square";
+}
+
+// Real stock photography from Pexels, searched by theme keywords. We pick
+// randomly from the top results so "Regenerate" yields a different real photo.
+async function generatePexels(req: GenerateBackgroundRequest): Promise<Buffer> {
+  const key = process.env.PEXELS_API_KEY;
+  if (!key) throw new Error("PEXELS_API_KEY is not set");
+  const query = (req.query && req.query.trim()) || req.prompt.slice(0, 80);
+  const url = `https://api.pexels.com/v1/search?query=${encodeURIComponent(
+    query
+  )}&orientation=${orientation(req.aspectRatio)}&per_page=24`;
+  const res = await fetch(url, { headers: { Authorization: key } });
+  if (!res.ok) throw new Error(`Pexels error: ${await res.text()}`);
+  const json = (await res.json()) as {
+    photos?: { src: { original: string; large2x: string; large: string } }[];
+  };
+  const photos = json.photos ?? [];
+  if (!photos.length) throw new Error(`No Pexels photos found for "${query}"`);
+  const pick = photos[Math.floor(Math.random() * Math.min(photos.length, 12))];
+  const imgUrl = pick.src.large2x || pick.src.original || pick.src.large;
+  const img = await fetch(imgUrl);
+  if (!img.ok) throw new Error("Failed to download Pexels photo");
+  return Buffer.from(await img.arrayBuffer());
 }
 
 function fullPrompt(req: GenerateBackgroundRequest): string {

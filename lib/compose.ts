@@ -142,6 +142,138 @@ function rasterizeText(spec: AdSpec): Buffer {
   return Buffer.from(resvg.render().asPng());
 }
 
+// A padded pixel rectangle for an asset, clamped to the canvas. Padding recovers
+// letters the vision model may have cropped (e.g. the "l" in "Gravel") and gives
+// a background margin for the cut-out to feather into.
+function paddedRect(
+  bbox: { x: number; y: number; w: number; h: number },
+  W: number,
+  H: number,
+  fx: number,
+  fy: number
+): { left: number; top: number; width: number; height: number } {
+  const px = bbox.w * fx;
+  const py = bbox.h * fy;
+  const x0 = Math.max(0, bbox.x - px);
+  const y0 = Math.max(0, bbox.y - py);
+  const x1 = Math.min(1, bbox.x + bbox.w + px);
+  const y1 = Math.min(1, bbox.y + bbox.h + py);
+  return {
+    left: Math.round(x0 * W),
+    top: Math.round(y0 * H),
+    width: Math.max(1, Math.round((x1 - x0) * W)),
+    height: Math.max(1, Math.round((y1 - y0) * H)),
+  };
+}
+
+/**
+ * "Cut out" a lifted asset so it blends onto the new photo instead of sitting in
+ * a rectangular box. Strategy:
+ *   1. Flood-fill from the crop's border (which, thanks to padding, is
+ *      background) growing through locally-similar pixels. This removes the
+ *      surrounding scene — sky, clouds, road texture — and stops at the sharp
+ *      edges of the logo/text. Works for gradients and textured backgrounds.
+ *   2. A global color key against the border background color cleans up any
+ *      enclosed background (e.g. sky showing inside letter holes).
+ *   3. Blur the alpha channel slightly to soften anti-aliased halos.
+ */
+async function cutoutAsset(crop: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(crop)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const w = info.width;
+  const h = info.height;
+  const ch = info.channels; // 4 (RGBA)
+  const idx = (x: number, y: number) => (y * w + x) * ch;
+
+  // Representative background color = median of border pixels.
+  const samples: Array<[number, number, number]> = [];
+  const step = Math.max(1, Math.floor(Math.min(w, h) / 40));
+  const push = (x: number, y: number) => {
+    const i = idx(x, y);
+    samples.push([data[i], data[i + 1], data[i + 2]]);
+  };
+  for (let x = 0; x < w; x += step) {
+    push(x, 0);
+    push(x, h - 1);
+  }
+  for (let y = 0; y < h; y += step) {
+    push(0, y);
+    push(w - 1, y);
+  }
+  const median = (c: number) => {
+    const arr = samples.map((s) => s[c]).sort((a, b) => a - b);
+    return arr[Math.floor(arr.length / 2)] ?? 0;
+  };
+  const bg: [number, number, number] = [median(0), median(1), median(2)];
+
+  const dist2 = (i: number, r: number, g: number, b: number) => {
+    const dr = data[i] - r;
+    const dg = data[i + 1] - g;
+    const db = data[i + 2] - b;
+    return dr * dr + dg * dg + db * db;
+  };
+
+  // 1. Region-growing flood fill from background-colored border pixels. Seeds
+  //    are gated to the background color so a dark element touching the crop
+  //    edge can't seed removal of the logo itself.
+  const localTol = 30 * 30; // neighbor-to-neighbor similarity (squared)
+  const seedTol = 70 * 70; // border pixel must be near bg to seed
+  const removed = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const seed = (x: number, y: number) => {
+    const p = y * w + x;
+    if (!removed[p] && dist2(p * ch, bg[0], bg[1], bg[2]) < seedTol) {
+      removed[p] = 1;
+      stack.push(p);
+    }
+  };
+  for (let x = 0; x < w; x++) {
+    seed(x, 0);
+    seed(x, h - 1);
+  }
+  for (let y = 0; y < h; y++) {
+    seed(0, y);
+    seed(w - 1, y);
+  }
+  while (stack.length) {
+    const p = stack.pop() as number;
+    const px = p % w;
+    const py = (p - px) / w;
+    const pi = p * ch;
+    const tryN = (nx: number, ny: number) => {
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) return;
+      const np = ny * w + nx;
+      if (removed[np]) return;
+      if (dist2(np * ch, data[pi], data[pi + 1], data[pi + 2]) < localTol) {
+        removed[np] = 1;
+        stack.push(np);
+      }
+    };
+    tryN(px - 1, py);
+    tryN(px + 1, py);
+    tryN(px, py - 1);
+    tryN(px, py + 1);
+  }
+
+  // 2. Global key for enclosed background (e.g. sky inside letter holes).
+  const globalTol = 62 * 62;
+  for (let p = 0; p < w * h; p++) {
+    if (!removed[p] && dist2(p * ch, bg[0], bg[1], bg[2]) < globalTol) {
+      removed[p] = 1;
+    }
+  }
+
+  for (let p = 0; p < w * h; p++) {
+    if (removed[p]) data[p * ch + 3] = 0;
+  }
+
+  return sharp(data, { raw: { width: w, height: h, channels: 4 } })
+    .png()
+    .toBuffer();
+}
+
 export interface ComposeInput {
   backgroundBuffer: Buffer;
   originalBuffer: Buffer;
@@ -161,22 +293,20 @@ export async function composeAd({
 
   const composites: sharp.OverlayOptions[] = [];
 
-  // 2. Lift brand assets pixel-exact from the original ad.
+  // 2. Lift brand assets from the original ad, padded so no letters are cropped,
+  //    then cut out their background so they blend onto the new photo.
   const originalPng = await sharp(originalBuffer)
     .resize(W, H, { fit: "fill" })
     .png()
     .toBuffer();
   for (const asset of spec.assets) {
-    const left = Math.max(0, Math.round(asset.bbox.x * W));
-    const top = Math.max(0, Math.round(asset.bbox.y * H));
-    const width = Math.min(W - left, Math.round(asset.bbox.w * W));
-    const height = Math.min(H - top, Math.round(asset.bbox.h * H));
-    if (width <= 0 || height <= 0) continue;
-    const crop = await sharp(originalPng)
-      .extract({ left, top, width, height })
-      .png()
-      .toBuffer();
-    composites.push({ input: crop, left, top });
+    const rect = paddedRect(asset.bbox, W, H, 0.06, 0.12);
+    rect.width = Math.min(W - rect.left, rect.width);
+    rect.height = Math.min(H - rect.top, rect.height);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const crop = await sharp(originalPng).extract(rect).png().toBuffer();
+    const cut = await cutoutAsset(crop);
+    composites.push({ input: cut, left: rect.left, top: rect.top });
   }
 
   // 3. Re-render plain text as one rasterized layer on top.

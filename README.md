@@ -23,9 +23,11 @@ upload ──▶ /api/analyze ──▶ AdSpec (text + logos + theme, via Claude
    and an inferred theme with a ready photoreal generation prompt.
 2. **Review** — you see the extracted text and can edit the theme keywords/prompt
    before anything is generated.
-3. **Generate** — a photorealistic, theme-matched background is generated.
-4. **Recomposite** — `sharp` lifts logos/badges/script pixel-exact from the
-   original and re-renders the plain text on top of the new background.
+3. **Background** — a real, theme-matched photo is fetched (Pexels) — or
+   generated (Gemini/Flux/OpenAI) if you prefer.
+4. **Recomposite** — `sharp` lifts logos/badges/script from the original, cuts
+   their background away (flood-fill) so they blend onto the new photo, and
+   re-renders the plain text with bundled fonts via `@resvg/resvg-js`.
 
 ## Setup
 
@@ -41,7 +43,8 @@ npm run dev                  # http://localhost:3000
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | yes | Used for ad analysis (vision). |
 | `ANTHROPIC_MODEL` | no | Defaults to a current vision-capable Claude model. |
-| `IMAGE_PROVIDER` | no | `mock` (default) \| `gemini` \| `openai` \| `flux`. |
+| `IMAGE_PROVIDER` | no | `pexels` (real photos) \| `mock` \| `gemini` \| `openai` \| `flux`. |
+| `PEXELS_API_KEY` | for `pexels` | Free key from https://www.pexels.com/api/. |
 | `GEMINI_API_KEY` / `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` | per provider | Set the one matching `IMAGE_PROVIDER`. |
 
 `IMAGE_PROVIDER=mock` returns a bundled placeholder background, so you can run

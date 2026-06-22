@@ -70,6 +70,11 @@ export default function Home() {
       const fullPrompt = keywords.length
         ? `${prompt}\n\nEmphasize: ${keywords.join(", ")}.`
         : prompt;
+      // Real-photo providers (Pexels) search by this short query; keywords are
+      // the most reliable signal, falling back to the theme subject.
+      const query = keywords.length
+        ? keywords.join(" ")
+        : `${spec.theme.subject} ${spec.theme.setting}`;
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -77,6 +82,7 @@ export default function Home() {
           prompt: fullPrompt,
           negativePrompt: spec.theme.negativePrompt,
           aspectRatio: spec.aspectRatio,
+          query,
         }),
       });
       const json = await res.json();
