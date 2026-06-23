@@ -64,7 +64,7 @@ export async function rebuildAd({
     model: process.env.REBUILD_MODEL || "gemini-2.5-flash-image",
   });
 
-  const result = await model.generateContent([
+  const content = [
     { text: buildInstruction(spec) },
     { inlineData: { mimeType: original.mime, data: original.data.toString("base64") } },
     {
@@ -73,12 +73,30 @@ export async function rebuildAd({
         data: background.data.toString("base64"),
       },
     },
-  ]);
+  ];
 
-  const parts = result.response.candidates?.[0]?.content?.parts ?? [];
-  for (const part of parts) {
-    const inline = (part as { inlineData?: { data: string } }).inlineData;
-    if (inline?.data) return Buffer.from(inline.data, "base64");
+  // Retry transient model errors (e.g. 503 "high demand", 429) with backoff.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const result = await model.generateContent(content);
+      const parts = result.response.candidates?.[0]?.content?.parts ?? [];
+      for (const part of parts) {
+        const inline = (part as { inlineData?: { data: string } }).inlineData;
+        if (inline?.data) return Buffer.from(inline.data, "base64");
+      }
+      throw new Error("Nano Banana returned no image data");
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const transient = /\b(503|429|500|overloaded|high demand|unavailable)\b/i.test(
+        msg
+      );
+      if (!transient || attempt === 2) break;
+      await new Promise((r) => setTimeout(r, 1200 * Math.pow(2, attempt)));
+    }
   }
-  throw new Error("Nano Banana returned no image data");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Nano Banana failed");
 }
