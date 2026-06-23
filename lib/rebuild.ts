@@ -27,20 +27,25 @@ function buildInstruction(spec: AdSpec): string {
     .map((a) => `  - ${a.kind}${a.label ? `: ${a.label}` : ""}`)
     .join("\n");
 
-  return `You are an expert ad designer recreating an advertisement poster.
+  return `You are an expert ad designer. You will design a brand-new poster FROM SCRATCH on a photo.
 
-IMAGE 1 is the ORIGINAL ad. Use it ONLY as a reference for the exact text wording, the logo and branding, the colours, the typography and the layout. DO NOT reuse IMAGE 1's background scene.
+IMAGE 2 is a REAL photograph. It is your CANVAS: it must fill the ENTIRE poster, edge to edge, as the one and only background.
 
-IMAGE 2 is a REAL photograph. Use it as the new full-bleed background of the poster.
+IMAGE 1 is the ORIGINAL ad, provided ONLY as a reference for the wording, the logo artwork, the colours and the typographic style. It is NOT to appear in the output.
 
-Rebuild the advertisement on top of IMAGE 2:
-- Keep IMAGE 2 as the photographic background, filling the entire poster.
-- CRITICAL: reproduce every word and number with 100% EXACT spelling — do not drop, add, or alter any character (e.g. keep dates, distances and URLs character-for-character). Place each text element in a similar position, size, weight and colour as the original:
+ABSOLUTELY DO NOT:
+- Do NOT paste, embed, inset, frame, or place IMAGE 1 (or any portion of it — its panels, coloured blocks, photo, or background) as a card, rectangle, sticker, sub-image, or overlay on top of IMAGE 2.
+- Do NOT shrink the whole ad onto the photo. Do NOT create a poster-within-a-poster.
+- The result must NEVER look like the original ad floating on a background.
+
+DO:
+- Treat IMAGE 2 as the full-bleed photographic background and design the poster DIRECTLY on it, as if a designer set type and logos natively over the photo.
+- Reproduce every word and number with 100% EXACT spelling — do not drop, add, or alter any character (keep dates, distances, phone numbers and URLs character-for-character):
 ${texts || "  (none)"}
-- Faithfully recreate the brand elements exactly as they appear in IMAGE 1 (same shapes, colours and lettering):
+- Recreate the brand/logo artwork faithfully (same shapes, colours, lettering), drawn cleanly onto the photo — not copied as a rectangle:
 ${assets || "  (none)"}
-- Match the original's typographic style as closely as you can. Make ALL text crisp, sharp and perfectly legible on the photo — add a subtle drop shadow or a soft darkened scrim behind text only where needed for contrast.
-- Output ONE finished portrait poster with the same proportions as the original. Do not add any extra text, captions, borders, or watermarks.`;
+- Arrange the text in a clean, balanced layout that suits the photo, echoing the original's hierarchy and colours. Make ALL text crisp, sharp and perfectly legible — add a subtle drop shadow or a soft darkened gradient scrim behind dense text only where needed for contrast.
+- Output ONE finished portrait poster, same proportions as the original, with NO borders, frames, captions or watermarks.`;
 }
 
 export async function rebuildAd({
