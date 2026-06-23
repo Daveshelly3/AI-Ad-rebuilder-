@@ -23,13 +23,6 @@ function extractJson(text: string): unknown {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
-function mediaType(mime: string): "image/jpeg" | "image/png" | "image/webp" | "image/gif" {
-  if (mime.includes("png")) return "image/png";
-  if (mime.includes("webp")) return "image/webp";
-  if (mime.includes("gif")) return "image/gif";
-  return "image/jpeg";
-}
-
 export async function POST(req: NextRequest) {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -47,9 +40,29 @@ export async function POST(req: NextRequest) {
     }
 
     const bytes = Buffer.from(await file.arrayBuffer());
-    const meta = await sharp(bytes).metadata();
-    const width = meta.width ?? 0;
-    const height = meta.height ?? 0;
+
+    // Normalize ANY upload (HEIC, huge screenshots, odd metadata) into a clean,
+    // bounded JPEG before sending to the model. This avoids format/size/media-
+    // type issues that vary by device. Original dimensions are kept for the spec.
+    let width = 0;
+    let height = 0;
+    let jpeg: Buffer;
+    try {
+      const pipeline = sharp(bytes, { failOn: "none" }).rotate();
+      const meta = await pipeline.metadata();
+      width = meta.width ?? 0;
+      height = meta.height ?? 0;
+      jpeg = await pipeline
+        .resize({ width: 1568, height: 1568, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+    } catch (e) {
+      const m = e instanceof Error ? e.message : "decode failed";
+      return NextResponse.json(
+        { error: `Could not read this image (${m}). Try a PNG or JPG screenshot.` },
+        { status: 400 }
+      );
+    }
     if (!width || !height) {
       return NextResponse.json(
         { error: "Could not read image dimensions" },
@@ -69,8 +82,8 @@ export async function POST(req: NextRequest) {
               type: "image",
               source: {
                 type: "base64",
-                media_type: mediaType((file as File).type || "image/jpeg"),
-                data: bytes.toString("base64"),
+                media_type: "image/jpeg",
+                data: jpeg.toString("base64"),
               },
             },
             { type: "text", text: ANALYSIS_PROMPT },
@@ -92,6 +105,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ spec });
   } catch (err) {
+    console.error("[analyze] error:", err);
     const msg = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: msg }, { status: 500 });
   }

@@ -5,7 +5,7 @@ import type { AdSpec } from "@/lib/adspec";
 
 type Step = 1 | 2 | 3 | 4;
 
-async function readFileAsDataUrl(file: File): Promise<string> {
+async function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(r.result as string);
@@ -14,9 +14,45 @@ async function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Normalize any uploaded image (incl. iOS HEIC and huge screenshots) into a
+ * bounded JPEG in the browser. This sidesteps device-specific format/size
+ * issues on the server and keeps request payloads small.
+ */
+async function normalizeImage(
+  file: File,
+  max = 1600
+): Promise<{ blob: Blob; dataUrl: string }> {
+  const srcUrl = await readFileAsDataUrl(file);
+  const img = document.createElement("img");
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Could not read that image file."));
+    img.src = srcUrl;
+  });
+  const scale = Math.min(1, max / Math.max(img.width, img.height || 1));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported.");
+  ctx.drawImage(img, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Image conversion failed."))),
+      "image/jpeg",
+      0.9
+    )
+  );
+  return { blob, dataUrl };
+}
+
 export default function Home() {
   const [step, setStep] = useState<Step>(1);
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<Blob | null>(null);
   const [originalUrl, setOriginalUrl] = useState<string>("");
   const [spec, setSpec] = useState<AdSpec | null>(null);
   const [keywords, setKeywords] = useState<string[]>([]);
@@ -32,12 +68,19 @@ export default function Home() {
 
   const onPick = useCallback(async (f: File) => {
     setError("");
-    setFile(f);
-    setOriginalUrl(await readFileAsDataUrl(f));
     setSpec(null);
     setBackground("");
     setResult("");
     setStep(1);
+    try {
+      const { blob, dataUrl } = await normalizeImage(f);
+      setFile(blob);
+      setOriginalUrl(dataUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that image.");
+      setFile(null);
+      setOriginalUrl("");
+    }
   }, []);
 
   async function analyze() {
@@ -46,7 +89,7 @@ export default function Home() {
     setError("");
     try {
       const fd = new FormData();
-      fd.append("image", file);
+      fd.append("image", file, "ad.jpg");
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Analyze failed");
