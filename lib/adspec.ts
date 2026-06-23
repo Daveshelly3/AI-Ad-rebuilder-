@@ -16,25 +16,34 @@ export const BBoxSchema = z.object({
 });
 export type BBox = z.infer<typeof BBoxSchema>;
 
+// Style hints are best-effort: the vision model occasionally returns values
+// outside our vocabulary, which must not break the whole rebuild — so each
+// falls back to a sane default instead of failing the parse.
 export const TextElementSchema = z.object({
   // Exact text as it appears in the ad. Preserve casing and punctuation.
   text: z.string(),
   bbox: BBoxSchema,
-  role: z.enum(["headline", "subhead", "body", "cta", "caption"]),
+  role: z
+    .enum(["headline", "subhead", "body", "cta", "caption"])
+    .catch("body"),
   // Hex color of the text fill, e.g. "#FFFFFF".
-  colorHex: z.string(),
-  weight: z.enum(["regular", "medium", "bold", "black"]),
-  case: z.enum(["upper", "title", "sentence", "mixed"]),
-  align: z.enum(["left", "center", "right"]),
+  colorHex: z.string().catch("#FFFFFF"),
+  weight: z.enum(["regular", "medium", "bold", "black"]).catch("regular"),
+  case: z
+    .enum(["upper", "title", "sentence", "mixed", "lower"])
+    .catch("mixed"),
+  align: z.enum(["left", "center", "right"]).catch("center"),
   // Loose descriptor of the typeface so we can map to a bundled font.
-  font_hint: z.enum(["condensed-sans", "sans", "serif", "script", "mono"]),
+  font_hint: z
+    .enum(["condensed-sans", "sans", "serif", "script", "mono"])
+    .catch("sans"),
 });
 export type TextElement = z.infer<typeof TextElementSchema>;
 
 export const AssetSchema = z.object({
   // Brand/graphic regions that must be preserved pixel-exact (lifted from the
   // original upload) rather than re-rendered.
-  kind: z.enum(["logo", "badge", "script", "icon", "graphic"]),
+  kind: z.enum(["logo", "badge", "script", "icon", "graphic"]).catch("graphic"),
   bbox: BBoxSchema,
   // Short human label, e.g. "GO Gravel wordmark".
   label: z.string().optional(),
