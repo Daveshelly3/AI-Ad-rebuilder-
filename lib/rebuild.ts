@@ -53,8 +53,10 @@ export async function rebuildAd({
   const { GoogleGenerativeAI } = await import("@google/generative-ai");
   const genAI = new GoogleGenerativeAI(key);
   const model = genAI.getGenerativeModel({
-    // gemini-3-pro-image renders text + logos far more accurately than flash.
-    model: process.env.REBUILD_MODEL || "gemini-3-pro-image",
+    // Flash (~10s) is the default: nearly pro-quality with a strong prompt, and
+    // it stays well under the serverless timeout. Set REBUILD_MODEL to
+    // gemini-3-pro-image for maximum fidelity if your plan allows longer runs.
+    model: process.env.REBUILD_MODEL || "gemini-2.5-flash-image",
   });
 
   const result = await model.generateContent([

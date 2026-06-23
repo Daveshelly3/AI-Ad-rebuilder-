@@ -142,21 +142,32 @@ export default function Home() {
 
   async function compose() {
     if (!spec || !background || !originalUrl) return;
-    setBusy("Recompositing the exact text & logos…");
+    setBusy("Rebuilding the ad with AI — this usually takes 10–20s…");
     setError("");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 90000);
     try {
       const res = await fetch("/api/compose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ spec, original: originalUrl, background }),
+        signal: ctrl.signal,
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Compose failed");
       setResult(json.result);
       setStep(4);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Compose failed");
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      setError(
+        aborted
+          ? "The rebuild took too long and timed out. Please try again."
+          : e instanceof Error
+          ? e.message
+          : "Compose failed"
+      );
     } finally {
+      clearTimeout(timer);
       setBusy("");
     }
   }
